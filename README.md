@@ -25,6 +25,9 @@ throws the finding out.
 Everything runs **on your machine**, with **your** GitHub token and **your**
 Gemini key. Nothing is sent to anyone else's server.
 
+> Looking for the manual? [**SOP.md**](SOP.md) is the full operating procedure —
+> setup, every command and option, what the output means, and troubleshooting.
+
 ---
 
 ## Try it in one command
