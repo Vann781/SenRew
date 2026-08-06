@@ -241,13 +241,14 @@ pauses entirely.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 77 tests, no network
+pytest -q          # 93 tests, no network
 ```
 
 They cover the loop (termination, the step ceiling, that the model's reply goes
 back verbatim so Gemini's `thoughtSignature` survives, that parallel call ids
 are echoed), the guardrails (path traversal, size caps), coverage reporting,
-the verifier actually dropping a finding, and the severity formula.
+the verifier actually dropping a finding, rate-limit handling (per-minute is
+waited out, per-day gives up) and the severity formula.
 
 ---
 
@@ -264,6 +265,11 @@ senrew/
   github.py         pull requests, diffs, posting the review
   severity.py       the scoring formula
   store.py          what has already been reviewed
+  config.py         settings, read from the environment
+  models.py         Finding, Review
+  output.py         printing tool calls as they happen
+  fake_llm.py       scripted replies, for the offline demo and the tests
+  demo.py           the built-in sample pull request
   prompts/          reviewer.md, verifier.md
   demo_repo/        the sample repository used by `senrew.py demo`
 ```
