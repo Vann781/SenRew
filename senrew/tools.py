@@ -50,11 +50,23 @@ class Run:
     on_tool: Callable[[str, dict], None] | None = None
 
     def file(self, path: str) -> dict | None:
-        """Find a changed file by path, tolerating a leading a/ or b/."""
+        """Find a changed file by path, tolerating a leading a/ or b/.
+
+        Every comparison is anchored on a "/" boundary. Matching a bare
+        suffix instead would make "watch_test.py" match a file called
+        "test.py", and then the whole review goes quietly wrong: the diff is
+        recorded against the wrong file, coverage reports the real one as
+        never opened, and any finding is posted on a line in a file that
+        never had that code.
+        """
         wanted = path.lstrip("./")
         for entry in self.files:
             name = entry.get("filename", "")
-            if name == wanted or name.endswith("/" + wanted) or wanted.endswith(name):
+            if not name:
+                continue
+            if (name == wanted
+                    or name.endswith("/" + wanted)     # model gave a short path
+                    or wanted.endswith("/" + name)):   # model gave a/ or b/ prefix
                 return entry
         return None
 

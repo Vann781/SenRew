@@ -175,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    # Line-buffer stdout. Python block-buffers when output is not a terminal,
+    # so piping `watch` to a file or a log shows nothing at all until the
+    # process exits - which for a watcher meant to run for hours is the same
+    # as showing nothing ever.
+    sys.stdout.reconfigure(line_buffering=True)
+
     # So a 60-second free-tier wait explains itself instead of looking hung.
     llm.on_wait = note
 

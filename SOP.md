@@ -197,7 +197,7 @@ branch, nothing to do`.
 
 | Option | Effect |
 |---|---|
-| `--once` | Do a single sweep and exit. Useful for testing. |
+| `--once` | One sweep, then exit. Checks configuration and repository discovery — it **cannot detect a push**, because it seeds refs and compares them in the same sweep. |
 | `--interval N` | Seconds between checks. Default 15. |
 | `--post` | Publish reviews instead of printing them. |
 
@@ -331,18 +331,32 @@ model: `critical` ≥ 80, `high` ≥ 60, `medium` ≥ 35, `low` below that.
 
 Stated plainly so no one is surprised in front of an audience:
 
-1. **The `watch` loop has not been verified end to end.** Startup, repository
-   discovery, remote resolution and ref seeding are tested. The full
-   *push → detect → review* sequence has not been run against a live push.
-2. **`--post` has never been executed.** Every review produced so far has been a
+1. **`--post` has never been executed.** Every review produced so far has been a
    dry-run preview. Posting is implemented and unit-tested but unproven live.
+2. **The watcher never fetches.** It reads local remote-tracking refs, which move
+   when *you* push or fetch. It will not notice a colleague's push until
+   something updates your refs. This is deliberate for a "review what I push"
+   tool, but it is not a server-side webhook.
 3. **Free-tier quota is the practical bottleneck**, not the tool. Roughly five
    requests per minute, one per agent step.
-4. **Coverage is best-effort.** If the agent skips a changed file, it is asked
+4. **`--once` cannot detect anything.** It seeds refs and compares them in the
+   same sweep, so there is never a difference to find. Use it to check
+   configuration and repository discovery only; leave the watcher running to
+   catch pushes.
+5. **Coverage is best-effort.** If the agent skips a changed file, it is asked
    once more; anything still unopened is named in the review rather than
    silently dropped — but it is still unreviewed.
-5. **`--repo-path` reads the working tree as it currently is**, which may not
+6. **`--repo-path` reads the working tree as it currently is**, which may not
    match the commit under review.
+
+### Verified end to end
+
+The `watch` loop was exercised against real pushes to a real pull request:
+a push is detected within one poll interval, matched to its open pull request,
+reviewed, and a second push triggers a second review. A head commit that has
+already been reviewed is skipped with `already reviewed at <sha>` and costs
+nothing. A failure mid-review (for example an exhausted quota) is reported and
+the watcher keeps running.
 
 ---
 
@@ -352,7 +366,7 @@ Stated plainly so no one is surprised in front of an audience:
 |---|---|---|
 | Check the model still exists | On a `not found` error | Try another name from §10 |
 | Rotate credentials | If exposed, or periodically | Revoke at source, update `.env` |
-| Run the test suite | After any code change | `pytest -q` — expect 93 passing |
+| Run the test suite | After any code change | `pytest -q` — expect 99 passing |
 | Clear review history | To force a re-review | Delete `~/.senrew/reviews.json` |
 
 ---

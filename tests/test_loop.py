@@ -185,6 +185,63 @@ def test_read_diff_of_a_binary_file_explains_itself(run):
     assert "no diff text" in tools.read_diff(run, "logo.png")
 
 
+# --- filename matching ------------------------------------------------------
+# Found by a live watcher run: a pull request containing both test.py and
+# watch_test.py attributed watch_test.py's diff and its finding to test.py,
+# then reported watch_test.py as never opened.
+
+
+@pytest.fixture
+def similar_names():
+    """A PR with one filename that is a bare suffix of another."""
+    return tools.Run(codebase=None, files=[
+        {"filename": "test.py", "status": "added", "changes": 0},          # no patch
+        {"filename": "watch_test.py", "status": "added", "changes": 4,
+         "patch": "@@\n+def apply_discount(price, percent):\n"},
+    ])
+
+
+def test_a_longer_filename_is_not_matched_to_a_shorter_one(similar_names):
+    assert similar_names.file("watch_test.py")["filename"] == "watch_test.py"
+    assert similar_names.file("test.py")["filename"] == "test.py"
+
+
+def test_reading_a_diff_credits_the_right_file(similar_names):
+    """Coverage was wrong because the read was credited to the other file."""
+    similar_names.diffs_read.clear()
+    tools.read_diff(similar_names, "watch_test.py")
+
+    assert similar_names.diffs_read == {"watch_test.py"}
+
+
+def test_a_finding_is_anchored_to_the_file_it_names(similar_names):
+    """Posted against the wrong file, this becomes a comment on code that
+    never contained the problem - and GitHub 422s the whole batch."""
+    tools.record_finding(
+        similar_names, path="watch_test.py", line=6, category="bug",
+        title="apply_discount allows negative prices", explanation="no bound on percent",
+    )
+
+    assert similar_names.findings[0].file_path == "watch_test.py"
+
+
+def test_a_prefixed_path_still_resolves(similar_names):
+    """Models copy 'a/' and 'b/' prefixes straight out of diff headers."""
+    assert similar_names.file("a/watch_test.py")["filename"] == "watch_test.py"
+    assert similar_names.file("./watch_test.py")["filename"] == "watch_test.py"
+
+
+def test_a_short_path_still_resolves_to_a_nested_file():
+    run = tools.Run(codebase=None, files=[
+        {"filename": "src/payments/refund.py", "changes": 3, "patch": "@@\n+x\n"},
+    ])
+    assert run.file("refund.py")["filename"] == "src/payments/refund.py"
+
+
+def test_an_unrelated_file_still_does_not_match(similar_names):
+    assert similar_names.file("totally_other.py") is None
+
+
 def test_record_finding_rejects_a_file_outside_the_pr(run):
     """Otherwise the agent drifts into reviewing the whole repository."""
     result = tools.record_finding(

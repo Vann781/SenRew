@@ -244,7 +244,7 @@ pauses entirely.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 93 tests, no network
+pytest -q          # 99 tests, no network
 ```
 
 They cover the loop (termination, the step ceiling, that the model's reply goes
