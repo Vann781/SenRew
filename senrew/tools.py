@@ -45,9 +45,25 @@ class Run:
     files: list[dict]                       # changed files, from GitHub
     findings: list[Finding] = field(default_factory=list)
     diffs_read: set[str] = field(default_factory=set)
+    cleared: dict[str, str] = field(default_factory=dict)  # path -> why it is fine
     done: bool = False
     summary: str = ""
+    finish_attempts: int = 0
     on_tool: Callable[[str, dict], None] | None = None
+
+    def reviewable(self) -> list[str]:
+        """Changed files that have diff text, so could be reviewed at all."""
+        return [f["filename"] for f in self.files if f.get("patch")]
+
+    def unaccounted(self) -> list[str]:
+        """Reviewable files with neither a finding nor an explicit all-clear.
+
+        Opening a file proves the agent looked at it. It does not prove the
+        agent reached a conclusion, and a file nobody concluded anything about
+        has not been reviewed.
+        """
+        judged = {f.file_path for f in self.findings} | set(self.cleared)
+        return [name for name in self.reviewable() if name not in judged]
 
     def file(self, path: str) -> dict | None:
         """Find a changed file by path, tolerating a leading a/ or b/.
@@ -258,13 +274,49 @@ def reject_finding(run: Run, finding_id: str, reason: str) -> str:
 
 
 @tool(
+    "no_issues_in",
+    "Record that you read a changed file and found nothing worth raising. "
+    "Every changed file needs either a finding or one of these - saying "
+    "nothing about a file is not the same as reviewing it.",
+    {
+        "path": {"type": "string", "description": "The changed file you checked"},
+        "reason": {"type": "string",
+                   "description": "One line on what it does and why it is fine"},
+    },
+    ["path", "reason"],
+)
+def no_issues_in(run: Run, path: str, reason: str = "") -> str:
+    entry = run.file(path)
+    if entry is None:
+        return f"'{path}' is not part of this pull request."
+    run.cleared[entry["filename"]] = reason.strip()[:300]
+    return f"Noted: {entry['filename']} reviewed, nothing to raise."
+
+
+@tool(
     "finish",
-    "Finish. Call this when you have reviewed every changed file and recorded "
-    "everything worth raising. Finding nothing is a valid and common result.",
+    "Finish. Call this once every changed file has either a finding or a "
+    "no_issues_in entry. Finding nothing is a valid and common result.",
     {"summary": {"type": "string", "description": "One or two sentences on what you did"}},
     ["summary"],
 )
 def finish(run: Run, summary: str = "") -> str:
+    run.finish_attempts += 1
+    missing = run.unaccounted()
+
+    # Push back once. The agent routinely reviews a file, decides it is fine,
+    # and simply says nothing - which is indistinguishable from never having
+    # looked. Refusing the first finish turns that silence into a decision.
+    # The second attempt always succeeds, so this can never deadlock, and
+    # MAX_STEPS bounds it regardless.
+    if missing and run.finish_attempts == 1:
+        listing = ", ".join(missing)
+        return (
+            f"Not yet. These changed file(s) have no finding and no "
+            f"no_issues_in entry: {listing}. Read each one, then either record "
+            f"a finding or call no_issues_in for it, then finish again."
+        )
+
     run.done = True
     run.summary = summary.strip()
     return "Done."
@@ -273,7 +325,7 @@ def finish(run: Run, summary: str = "") -> str:
 # --- dispatch --------------------------------------------------------------
 
 REVIEWER_TOOLS = ["list_changed_files", "read_diff", "read_file", "search_repo",
-                  "record_finding", "finish"]
+                  "record_finding", "no_issues_in", "finish"]
 VERIFIER_TOOLS = ["read_diff", "read_file", "search_repo",
                   "confirm_finding", "reject_finding", "finish"]
 

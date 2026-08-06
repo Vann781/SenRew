@@ -99,6 +99,23 @@ class LocalCodebase:
             return f"(could not read {path}: {exc})"
         return _clip(_numbered(text, start_line, end_line))
 
+    def read_raw(self, path: str) -> str | None:
+        """The file exactly as it is, for a parser rather than for reading.
+
+        read_file numbers and truncates, which is right for a model and wrong
+        for anything that has to parse the result. Same path guard applies.
+        """
+        try:
+            target = self._resolve(path)
+        except PathRefused:
+            return None
+        if not target.is_file():
+            return None
+        try:
+            return target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None  # binary, or unreadable: nothing to parse
+
     def search(self, query: str, max_results: int = 0) -> str:
         limit = max_results or config.MAX_SEARCH_RESULTS
         hits: list[str] = []
@@ -169,6 +186,28 @@ class GitHubCodebase:
             return f"(binary file: {path})"
 
         return _clip(_numbered(text, start_line, end_line))
+
+    def read_raw(self, path: str) -> str | None:
+        """The file at the pull request's head commit, unmodified."""
+        if path.startswith("/") or ".." in Path(path).parts:
+            return None
+
+        response = self.http.get(
+            f"{config.GITHUB_API}/repos/{self.repository}/contents/{path}",
+            headers=self._headers(),
+            params={"ref": self.ref},
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return None
+
+        payload = response.json()
+        if payload.get("encoding") != "base64":
+            return None
+        try:
+            return base64.b64decode(payload["content"]).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None  # binary
 
     def search(self, query: str, max_results: int = 0) -> str:
         limit = max_results or config.MAX_SEARCH_RESULTS

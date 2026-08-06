@@ -72,11 +72,17 @@ def compute_score(
     category: str,
     file_path: str,
     blast_radius: str = "single_function",
+    discount_test_files: bool = True,
 ) -> float:
     """Calculate a 0-100 severity score from the model's labels.
 
     Unknown labels fall back to middle values rather than crashing, because
     models occasionally return something we did not offer.
+
+    discount_test_files=False turns off the test-file reduction. Used for
+    findings a parser produced: a file that does not parse is broken whatever
+    it is called, and should not lose 30% of its score because its name
+    happens to start with "test".
     """
     score = IMPACT_WEIGHT.get(impact, 40) * LIKELIHOOD_WEIGHT.get(likelihood, 0.6)
     score *= RADIUS_MULTIPLIER.get(blast_radius, 1.0)
@@ -84,17 +90,24 @@ def compute_score(
 
     if is_security_sensitive(file_path):
         score *= SECURITY_PATH_MULTIPLIER
-    if is_test_file(file_path):
+    if discount_test_files and is_test_file(file_path):
         score *= TEST_FILE_MULTIPLIER
 
     return round(min(max(score, 0.0), 100.0), 1)
 
 
 def score_finding(finding: Finding) -> Finding:
-    """Fill in severity_score and severity_band."""
+    """Fill in severity_score and severity_band.
+
+    A deterministic finding - one a parser produced, not a model - keeps its
+    full score in a test file. A file that does not parse is broken whatever
+    it is called, and "test5.py" should not lose 30% purely because its name
+    begins with "test".
+    """
     finding.severity_score = compute_score(
         finding.impact, finding.likelihood, finding.category,
         finding.file_path, finding.blast_radius,
+        discount_test_files=not finding.deterministic,
     )
     finding.severity_band = band_for_score(finding.severity_score)
     return finding

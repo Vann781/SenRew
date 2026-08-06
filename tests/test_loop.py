@@ -57,10 +57,12 @@ def drive(monkeypatch, replies, run, **kwargs):
 def test_loop_stops_when_the_agent_calls_finish(monkeypatch, run):
     steps, _ = drive(monkeypatch, [
         call("list_changed_files"),
+        call("no_issues_in", path="src/app.py", reason="fine"),
+        call("no_issues_in", path="src/util.py", reason="fine"),
         call("finish", summary="all good"),
     ], run)
 
-    assert steps == 2
+    assert steps == 4
     assert run.done is True
     assert run.summary == "all good"
 

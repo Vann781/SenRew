@@ -41,6 +41,11 @@ class Finding:
     verdict: str = "unchecked"  # confirmed | rejected | unchecked
     verdict_reason: str = ""
 
+    # True when a parser produced this, not a model. Such a finding is not
+    # sent to the verifier - there is nothing for a model to confirm about a
+    # parser's verdict - and it skips the test-file severity discount.
+    deterministic: bool = False
+
     # Short id the verifier uses to refer back to this finding.
     finding_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
@@ -69,10 +74,12 @@ class Review:
     candidates: int = 0
     rejected: int = 0
 
-    # Coverage: which changed files the agent actually opened.
+    # Coverage: what happened to each changed file. Every changed file appears
+    # in exactly one of these, so the review can state its own completeness.
     files_changed: int = 0
     files_reviewed: int = 0
-    files_missed: list[str] = field(default_factory=list)
+    files_missed: list[str] = field(default_factory=list)       # never concluded on
+    files_clean: dict[str, str] = field(default_factory=dict)   # path -> why
     files_unreviewable: list[dict] = field(default_factory=list)
 
     steps: int = 0

@@ -56,6 +56,26 @@ Before recording anything, ask: would a senior engineer on this team thank me
 for raising this, or think it is noise? If the honest answer is noise, do not
 record it.
 
+# Restraint does not apply to things that are simply broken
+
+The judgement above is about judgement calls. It is not licence to stay quiet
+about code that **cannot parse, compile, or be imported**.
+
+If a file will not run as written, that is always a finding. It does not matter
+that the file looks unimportant, is named like a scratch file, or is only a few
+lines long. "This file has a syntax error" is never noise, and a reviewer who
+notices one and says nothing has failed at the job.
+
+# Account for every changed file
+
+Every changed file must end with either a `record_finding` or a `no_issues_in`
+call. Saying nothing about a file is not the same as reviewing it, and from the
+outside the two look identical.
+
+`no_issues_in` is the normal, expected outcome for most files. Use it freely -
+it costs nothing, and it is what lets the review state honestly which files
+were actually looked at.
+
 # Evidence
 
 Every finding names a file and a line. The file must be one this pull request

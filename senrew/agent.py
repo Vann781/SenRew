@@ -11,9 +11,10 @@ The verifier is what makes this worth building: it can open the file and see
 that a value is checked against a whitelist, instead of guessing.
 """
 
+import re
 from typing import Any, Callable
 
-from senrew import config, github, llm, severity, tools
+from senrew import config, github, llm, severity, syntax, tools
 from senrew.models import Finding, Review
 from senrew.prompts import load
 
@@ -93,11 +94,17 @@ def review_pull_request(
 
     run = tools.Run(codebase=codebase, files=files, on_tool=on_tool)
 
+    # --- pass 0: does it even parse? ---------------------------------------
+    # A parser, not a model. Deterministic, free, and it cannot change its
+    # mind between runs - which is how an unparseable file went unreported.
+    broken = check_syntax(codebase, reviewable, note)
+    run.findings.extend(broken)
+
     # --- pass 1: review ----------------------------------------------------
     try:
         steps = run_agent(
             load("reviewer"),
-            _review_task(repository, pr, reviewable),
+            _review_task(repository, pr, reviewable, broken),
             tools.REVIEWER_TOOLS, run, usage,
         )
     except StepLimit as exc:
@@ -111,12 +118,13 @@ def review_pull_request(
         review.summary = "SenRew could not review this pull request."
         return review
 
-    # A file the agent never opened was not reviewed, whatever it claims.
-    missed = [name for name in reviewable if name not in run.diffs_read]
+    # A file with no finding and no explicit all-clear was not concluded on,
+    # whatever the agent claims. Opening it is not the same as judging it.
+    missed = run.unaccounted()
 
-    # --- pass 1b: one nudge about anything it skipped -----------------------
+    # --- pass 1b: one nudge about anything it never concluded on ------------
     if missed:
-        note(f"! {len(missed)} changed file(s) never opened, asking again")
+        note(f"! {len(missed)} changed file(s) not accounted for, asking again")
         run.done = False
         try:
             steps += run_agent(
@@ -126,24 +134,28 @@ def review_pull_request(
             )
         except (StepLimit, llm.ModelBlocked) as exc:
             note(f"! second pass stopped: {exc}")
-        missed = [name for name in reviewable if name not in run.diffs_read]
+        missed = run.unaccounted()
 
     review.candidates = len(run.findings)
     review.files_reviewed = len(run.diffs_read)
     review.files_missed = missed
 
     # --- pass 2: verify ----------------------------------------------------
-    if run.findings and config.VERIFY:
+    # Parser findings are excluded. There is nothing for a model to confirm
+    # about a SyntaxError, and asking spends a step to invite doubt.
+    checkable = [f for f in run.findings if not f.deterministic]
+
+    if checkable and config.VERIFY:
         run.done = False
         try:
             steps += run_agent(
                 load("verifier"),
-                _verify_task(run.findings), tools.VERIFIER_TOOLS, run, usage,
+                _verify_task(checkable), tools.VERIFIER_TOOLS, run, usage,
             )
         except (StepLimit, llm.ModelBlocked) as exc:
             # Keep the findings but do not claim they were checked.
             note(f"! verification stopped: {exc}")
-            for finding in run.findings:
+            for finding in checkable:
                 if finding.verdict == "unchecked":
                     finding.verdict_reason = "verification did not complete"
 
@@ -155,36 +167,115 @@ def review_pull_request(
     above_floor = [f for f in scored if severity.meets_minimum(f, config.MIN_SEVERITY_TO_POST)]
     review.findings = above_floor[: config.MAX_COMMENTS_PER_REVIEW]
 
+    # Every reviewable file has to end up somewhere in the report. A file
+    # whose only finding was rejected, or scored below the floor, would
+    # otherwise drop out of the coverage list entirely and read as though it
+    # had never been part of the pull request.
+    review.files_clean = dict(run.cleared)
+    published = {f.file_path for f in review.findings}
+
+    for name in reviewable:
+        if name in published or name in review.files_clean or name in missed:
+            continue
+        withdrawn = any(
+            f.file_path == name and f.verdict == "rejected" for f in run.findings
+        )
+        review.files_clean[name] = (
+            "raised, then withdrawn after checking the code" if withdrawn
+            else "reviewed; nothing above the reporting threshold"
+        )
+
     review.steps = steps
     review.cost_usd = usage.cost_usd
     review.summary = build_summary(review, suppressed=len(above_floor) - len(review.findings))
     return review
 
 
+# --- the parser pass -------------------------------------------------------
+
+
+def check_syntax(codebase: Any, reviewable: list[str], note) -> list[Finding]:
+    """Findings for files that do not parse. No model involved."""
+    found: list[Finding] = []
+
+    for name in reviewable:
+        if not syntax.can_check(name):
+            continue  # no parser for this language; the agent still reads it
+
+        source = codebase.read_raw(name) if codebase else None
+        if source is None:
+            continue
+
+        error = syntax.check(name, source)
+        if not error:
+            continue
+
+        note(f"! {name} does not parse: {error}")
+        found.append(Finding(
+            file_path=name,
+            line=_line_of(error),
+            category="bug",
+            title=f"{name} does not parse",
+            explanation=(
+                f"This file is not valid and cannot run or be imported as "
+                f"written. A parser reports: {error}"
+            ),
+            # Certainty is total - this is a parser's verdict, not an opinion.
+            impact="major",
+            likelihood="certain",
+            blast_radius="single_file",
+            verdict="confirmed",
+            verdict_reason=f"Checked with a parser: {error}",
+            deterministic=True,
+        ))
+
+    return found
+
+
+def _line_of(error: str) -> int:
+    """Pull the line number out of a checker's message, or 0."""
+    match = re.search(r"line (\d+)", error)
+    return int(match.group(1)) if match else 0
+
+
 # --- task prompts ----------------------------------------------------------
 
 
-def _review_task(repository: str, pr: dict, reviewable: list[str]) -> str:
+def _review_task(repository: str, pr: dict, reviewable: list[str],
+                 already_found: list[Finding]) -> str:
     listing = "\n".join(f"  - {name}" for name in reviewable)
+
+    known = ""
+    if already_found:
+        names = ", ".join(sorted({f.file_path for f in already_found}))
+        known = (
+            f"\nAlready reported by a parser, do NOT report again: {names} "
+            f"do not parse. You may still raise other, separate problems in "
+            f"them.\n"
+        )
+
     return (
         f"Review pull request #{pr['number']} in {repository}.\n\n"
         f"Title: {pr.get('title') or '(none)'}\n"
         f"Description:\n<untrusted>\n{(pr.get('body') or '(none)')[:1500]}\n</untrusted>\n\n"
-        f"These {len(reviewable)} changed file(s) must each be opened with "
-        f"read_diff before you finish:\n{listing}\n\n"
+        f"These {len(reviewable)} changed file(s) must EACH be accounted for "
+        f"before you finish:\n{listing}\n{known}\n"
         f"Read the diff of every one. Where a diff alone cannot tell you "
         f"whether something is really a problem, use read_file and "
-        f"search_repo to check before deciding. Record only what you can "
-        f"support, then call finish."
+        f"search_repo to check before deciding.\n\n"
+        f"Every file above must end with either a record_finding or a "
+        f"no_issues_in call. Then call finish."
     )
 
 
 def _missed_task(missed: list[str]) -> str:
     listing = "\n".join(f"  - {name}" for name in missed)
     return (
-        f"You finished without opening these changed file(s):\n{listing}\n\n"
-        f"Read each one with read_diff now and record anything worth raising. "
-        f"If they are all fine, call finish."
+        f"You finished without concluding anything about these changed "
+        f"file(s):\n{listing}\n\n"
+        f"Read each one with read_diff now. For each, either record_finding "
+        f"if something is wrong, or no_issues_in saying why it is fine. Then "
+        f"call finish."
     )
 
 
@@ -237,19 +328,28 @@ def build_summary(review: Review, suppressed: int = 0) -> str:
         body += [f"{suppressed} lower-scoring finding(s) were not posted, to keep "
                  f"the review readable.", ""]
 
-    # Coverage, always stated. A review that quietly skipped a file reads as a
-    # review that found less - which is how the bug that prompted this project
-    # stayed invisible.
-    body.append(f"**Coverage:** opened {review.files_reviewed} of "
-                f"{review.files_changed} changed file(s).")
+    # Coverage, stated per file. A review that quietly skipped a file reads as
+    # a review that found less, which is how this whole class of bug stayed
+    # invisible - so every changed file is listed with what happened to it.
+    with_findings: dict[str, int] = {}
+    for finding in review.findings:
+        with_findings[finding.file_path] = with_findings.get(finding.file_path, 0) + 1
 
-    if review.files_missed:
-        body.append("")
-        body.append("Not opened: " + ", ".join(f"`{n}`" for n in review.files_missed))
-    if review.files_unreviewable:
-        body.append("")
-        for entry in review.files_unreviewable:
-            body.append(f"Not reviewable: `{entry['filename']}` - {entry['reason']}")
+    body += ["", "**Coverage**", ""]
+
+    for path, count in sorted(with_findings.items()):
+        body.append(f"- `{path}` - {count} finding{'s' if count != 1 else ''}")
+    for path, reason in sorted(review.files_clean.items()):
+        # A file can be both: the agent often marks a file clean after the
+        # parser already flagged it. Report the finding, not the all-clear.
+        if path in with_findings:
+            continue
+        body.append(f"- `{path}` - reviewed, no issues"
+                    + (f": {reason}" if reason else ""))
+    for path in sorted(review.files_missed):
+        body.append(f"- `{path}` - **not reviewed**")
+    for entry in review.files_unreviewable:
+        body.append(f"- `{entry['filename']}` - not reviewable: {entry['reason']}")
 
     if review.candidates:
         body += ["", f"<sub>{review.candidates} candidate finding(s), "

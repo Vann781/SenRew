@@ -137,7 +137,7 @@ Two agents share one loop. The loop is about forty lines in
 ask the model -> it calls tools -> run them -> hand back the results -> repeat
 ```
 
-**The reviewer** gets six tools:
+**The reviewer** gets seven tools:
 
 | Tool | What it is for |
 |---|---|
@@ -146,6 +146,7 @@ ask the model -> it calls tools -> run them -> hand back the results -> repeat
 | `read_file` | **Any** file, including code the diff does not show |
 | `search_repo` | Find where a function is defined, or who calls it |
 | `record_finding` | Report a problem |
+| `no_issues_in` | Say a file is fine — silence is not a review |
 | `finish` | Stop |
 
 **The verifier** then gets the findings and the same reading tools, and is told
@@ -169,20 +170,44 @@ rewrite, and anyone who disagrees can be shown the sum.
 
 ---
 
-## Coverage is reported, not assumed
+## Every file is accounted for
 
 A reviewer that quietly skips a file reads as a reviewer that found less. So
-every review states what it opened:
+every changed file must end with either a finding or an explicit all-clear, and
+the review lists all of them:
 
 ```
-**Coverage:** opened 2 of 3 changed file(s).
+**Coverage**
 
-Not reviewable: `assets/logo.png` - binary or empty - GitHub sent no diff text
+- `src/payments/refund.py` - 1 finding
+- `test5.py` - 1 finding
+- `watch_test.py` - reviewed, no issues: pure arithmetic helpers
+- `test.py` - not reviewable: binary or empty - GitHub sent no diff text
 ```
 
-Coverage is measured from the `read_diff` calls the agent actually made, not
-from what it claims. If it skips a file, it gets asked once more, and anything
-still unopened is named in the review.
+`finish` refuses the first time any file is unaccounted for, naming them. Opening
+a file proves the agent looked at it; it does not prove it reached a conclusion,
+and a file nobody concluded anything about has not been reviewed.
+
+## Some things are not a judgement call
+
+Before the model sees anything, every changed file is **parsed**. A file that
+does not parse is reported as `critical` — deterministically, on every run, with
+no model involved:
+
+```
+test5.py:1  CRITICAL · does not parse
+line 1: Missing parentheses in call to 'print'. Did you mean print(...)?
+```
+
+This exists because a real review missed exactly that. The model had read the
+diff and decided, that run, that it was not worth mentioning. A parser does not
+have moods.
+
+Python, JSON, TOML and XML are checked with the standard library. JavaScript,
+Ruby, PHP and Go are checked only if that toolchain happens to be installed — a
+missing compiler is never reported as a broken file. Anything else falls back to
+the model, backed by the accounting rule above.
 
 ---
 
@@ -244,7 +269,7 @@ pauses entirely.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 99 tests, no network
+pytest -q          # 127 tests, no network
 ```
 
 They cover the loop (termination, the step ceiling, that the model's reply goes

@@ -106,6 +106,17 @@ def _reviewer(turn: int, contents) -> dict[str, Any]:
     if turn == len(files) + 2:
         return _calls(*_canned_findings(files))
 
+    # Account for every file the canned findings did not cover, so the offline
+    # run satisfies the same completeness rule a real one has to.
+    if turn == len(files) + 3:
+        covered = {files[0], files[-1]}
+        rest = [f for f in files if f not in covered]
+        if rest:
+            return _calls(*[
+                ("no_issues_in", {"path": f, "reason": "canned: nothing to raise"})
+                for f in rest
+            ])
+
     return _call("finish", summary="Canned review complete.")
 
 

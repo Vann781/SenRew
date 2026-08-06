@@ -287,6 +287,46 @@ Each line is one action the agent took:
 Bands are computed in code from the model's labels, never invented by the
 model: `critical` ≥ 80, `high` ≥ 60, `medium` ≥ 35, `low` below that.
 
+### 9.4 Coverage
+
+Every changed file appears in the coverage block with what happened to it:
+
+```
+**Coverage**
+
+- `src/payments/refund.py` - 1 finding
+- `watch_test.py` - reviewed, no issues: pure arithmetic helpers
+- `src/util.py` - **not reviewed**
+- `logo.png` - not reviewable: binary or empty - GitHub sent no diff text
+```
+
+`not reviewed` means the agent never reached a conclusion about that file even
+after being asked a second time. Treat that file as unreviewed. `not reviewable`
+means GitHub sent no diff text — a binary or empty file — and there is nothing
+any reviewer could have read.
+
+### 9.5 Files that do not parse
+
+Before the model runs, every changed file is parsed. One that fails is reported
+as `critical` with no model involved, so it appears on every run rather than
+whenever the model considers it worth mentioning:
+
+```
+test5.py:1  CRITICAL - test5.py does not parse
+line 1: Missing parentheses in call to 'print'. Did you mean print(...)?
+```
+
+| Language | Checked with | Available |
+|---|---|---|
+| Python, JSON, TOML, XML | standard library | always |
+| JavaScript, Ruby, PHP, Go | `node --check`, `ruby -c`, `php -l`, `gofmt -e` | only if installed |
+| Everything else | — | falls back to the model |
+
+A missing toolchain is never reported as a broken file. These findings skip the
+verifier — there is nothing for a model to confirm about a parser's verdict —
+and they keep their full score in a test file, because a file that does not
+parse is broken whatever it is called.
+
 ---
 
 ## 10. Troubleshooting
@@ -343,10 +383,13 @@ Stated plainly so no one is surprised in front of an audience:
    same sweep, so there is never a difference to find. Use it to check
    configuration and repository discovery only; leave the watcher running to
    catch pushes.
-5. **Coverage is best-effort.** If the agent skips a changed file, it is asked
-   once more; anything still unopened is named in the review rather than
-   silently dropped — but it is still unreviewed.
-6. **`--repo-path` reads the working tree as it currently is**, which may not
+5. **Coverage is enforced but not guaranteed.** Every changed file must end
+   with a finding or an explicit all-clear, and `finish` refuses once while any
+   are missing. A file that survives both passes unaccounted for is named as
+   **not reviewed** rather than silently dropped — but it is still unreviewed.
+6. **Only some languages can be parsed.** See §9.5. A syntax error in Rust,
+   Java, C or TypeScript is found only if the model notices it.
+7. **`--repo-path` reads the working tree as it currently is**, which may not
    match the commit under review.
 
 ### Verified end to end
@@ -366,7 +409,7 @@ the watcher keeps running.
 |---|---|---|
 | Check the model still exists | On a `not found` error | Try another name from §10 |
 | Rotate credentials | If exposed, or periodically | Revoke at source, update `.env` |
-| Run the test suite | After any code change | `pytest -q` — expect 99 passing |
+| Run the test suite | After any code change | `pytest -q` — expect 127 passing |
 | Clear review history | To force a re-review | Delete `~/.senrew/reviews.json` |
 
 ---

@@ -44,21 +44,27 @@ def review(monkeypatch, replies, files=None, codebase=None):
 # --- coverage: the bug this project exists to fix --------------------------
 
 
-def test_coverage_is_reported_honestly(monkeypatch):
-    """Opening one of two reviewable files must say so, not quietly pass."""
+def test_a_file_never_concluded_on_is_named_as_unreviewed(monkeypatch):
+    """Reading a file is not judging it.
+
+    The agent opens src/util.py but never records a finding or an all-clear
+    for it. That file has not been reviewed, and the summary must say so
+    rather than let it pass as clean.
+    """
     result = review(monkeypatch, [
         call("list_changed_files"),
         call("read_diff", path="src/app.py"),
-        call("finish", summary="done"),
-        # the nudge pass, which also declines to open src/util.py
-        call("finish", summary="still done"),
+        call("no_issues_in", path="src/app.py", reason="trivial"),
+        call("read_diff", path="src/util.py"),
+        call("finish", summary="done"),          # refused: util.py unaccounted
+        call("finish", summary="done anyway"),   # second attempt always lands
+        call("finish", summary="nudge pass"),    # nudge pass, still no verdict
+        call("finish", summary="nudge pass"),
     ])
 
     assert result.files_changed == 3
-    assert result.files_reviewed == 1
     assert result.files_missed == ["src/util.py"]
-    assert "src/util.py" in result.summary
-    assert "opened 1 of 3" in result.summary
+    assert "`src/util.py` - **not reviewed**" in result.summary
 
 
 def test_a_skipped_file_is_nudged_and_can_be_recovered(monkeypatch):
@@ -66,13 +72,18 @@ def test_a_skipped_file_is_nudged_and_can_be_recovered(monkeypatch):
     result = review(monkeypatch, [
         call("list_changed_files"),
         call("read_diff", path="src/app.py"),
+        call("no_issues_in", path="src/app.py", reason="trivial"),
+        call("finish", summary="done"),          # refused: util.py unaccounted
         call("finish", summary="done"),
-        call("read_diff", path="src/util.py"),   # nudge pass picks it up
+        # nudge pass picks it up and concludes on it
+        call("read_diff", path="src/util.py"),
+        call("no_issues_in", path="src/util.py", reason="just a constant"),
         call("finish", summary="now done"),
     ])
 
-    assert result.files_reviewed == 2
     assert result.files_missed == []
+    assert set(result.files_clean) == {"src/app.py", "src/util.py"}
+    assert "reviewed, no issues: just a constant" in result.summary
 
 
 def test_binary_files_are_named_not_hidden(monkeypatch):
@@ -228,13 +239,18 @@ def test_the_summary_admits_what_it_suppressed():
     assert "4 lower-scoring finding(s) were not posted" in summary
 
 
-def test_a_clean_review_says_so():
-    review_obj = Review(repository="a/b", pr_number=1, head_sha="x",
-                        files_changed=2, files_reviewed=2)
+def test_a_clean_review_lists_the_files_it_cleared():
+    """'No issues' is only believable if it says which files it looked at."""
+    review_obj = Review(
+        repository="a/b", pr_number=1, head_sha="x",
+        files_changed=2, files_reviewed=2,
+        files_clean={"src/app.py": "adds a constant", "src/util.py": "renames a local"},
+    )
     summary = agent.build_summary(review_obj)
 
     assert "No issues found" in summary
-    assert "opened 2 of 2" in summary
+    assert "`src/app.py` - reviewed, no issues: adds a constant" in summary
+    assert "`src/util.py` - reviewed, no issues: renames a local" in summary
 
 
 # --- posting ---------------------------------------------------------------
